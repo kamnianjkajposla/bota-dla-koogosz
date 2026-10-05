@@ -10,7 +10,6 @@ http.createServer((req, res) => {
     res.end("Bot Discord działa!");
 }).listen(PORT, "0.0.0.0", () => {
     console.log(`HTTP działa na porcie ${PORT}`);
-});
 const {
     Client,
     GatewayIntentBits,
