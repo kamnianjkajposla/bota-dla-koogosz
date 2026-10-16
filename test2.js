@@ -24,8 +24,7 @@ const http = require("http");
 // ==========================================================
 // USTAWIENIA I ZMIENNE ŚRODOWISKOWE
 // ==========================================================
-
-const TOKEN = process.env.DISCORD_TOKEN ||;
+const TOKEN = process.env.DISCORD_TOKEN;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const CONFIG_FILE = path.join(DATA_DIR, "ticket-config.json");
 
