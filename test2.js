@@ -25,7 +25,7 @@ const http = require("http");
 // USTAWIENIA I ZMIENNE ŚRODOWISKOWE
 // ==========================================================
 
-const TOKEN = process.env.DISCORD_TOKEN;
+const TOKEN = process.env.DISCORD_TOKEN || "MTU1NjAyMTY3MjYzOTk5MTgxOA.Gzkv3t.vUArkwjsNXkKeqO26N_Mv44LH917MGDzRcU6S0";
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const CONFIG_FILE = path.join(DATA_DIR, "ticket-config.json");
 
@@ -34,7 +34,7 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 // ==========================================================
-// SERWER HTTP (DLA HOSTINGU / RENDER / COLIFY)
+// SERWER HTTP (DLA HOSTINGU LOKALNEGO / RENDER)
 // ==========================================================
 
 const PORT = process.env.PORT || 3000;
