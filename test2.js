@@ -26,7 +26,7 @@ const http = require("http");
 // ==========================================================
 
 const TOKEN = process.env.DISCORD_TOKEN;
-const DATA_DIR = process.env.DATA_DIR || __dirname;
+const DATA_DIR = process.env.DATA_DIR ;
 const CONFIG_FILE = path.join(DATA_DIR, "ticket-config.json");
 
 if (!fs.existsSync(DATA_DIR)) {
