@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      dns:
+        - 8.8.8.8
+        - 1.1.1.1
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: always
