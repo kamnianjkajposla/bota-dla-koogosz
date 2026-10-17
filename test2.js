@@ -24,8 +24,9 @@ const http = require("http");
 // ==========================================================
 // USTAWIENIA I ZMIENNE ŚRODOWISKOWE
 // ==========================================================
+
 const TOKEN = process.env.DISCORD_TOKEN;
-const DATA_DIR = process.env.DATA_DIR;
+const DATA_DIR = process.env.DATA_DIR || __dirname;
 const CONFIG_FILE = path.join(DATA_DIR, "ticket-config.json");
 
 if (!fs.existsSync(DATA_DIR)) {
@@ -33,7 +34,7 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 // ==========================================================
-// SERWER HTTP (DLA HOSTINGU LOKALNEGO / RENDER)
+// SERWER HTTP (DLA HOSTINGU / RENDER / COLIFY)
 // ==========================================================
 
 const PORT = process.env.PORT || 3000;
@@ -456,20 +457,39 @@ function categoryAdminMenu(customId) {
     return new ActionRowBuilder().addComponents(menu);
 }
 
-function questionCategoryMenu() {
+function questionCategoryMenu(actionType) {
     const options = config.categories.slice(0, 25).map(category => {
         const option = new StringSelectMenuOptionBuilder().setLabel(category.name.substring(0, 100)).setValue(category.id);
         if (category.emoji) option.setEmoji(category.emoji);
         return option;
     });
 
-    const menu = new StringSelectMenuBuilder().setCustomId("admin_question_category").setPlaceholder("❓ Wybierz kategorię").addOptions(options);
+    const menu = new StringSelectMenuBuilder().setCustomId(`q_cat_select_${actionType}`).setPlaceholder("❓ Wybierz kategorię").addOptions(options);
+    return new ActionRowBuilder().addComponents(menu);
+}
+
+function questionSelectMenu(category, actionType) {
+    const options = category.questions.slice(0, 25).map((q, index) => {
+        return new StringSelectMenuOptionBuilder()
+            .setLabel(`${index + 1}. ${q}`.substring(0, 100))
+            .setValue(String(index));
+    });
+
+    const menu = new StringSelectMenuBuilder().setCustomId(`q_select_${actionType}_${category.id}`).setPlaceholder("❓ Wybierz pytanie").addOptions(options);
     return new ActionRowBuilder().addComponents(menu);
 }
 
 function addQuestionModal(categoryId) {
     const modal = new ModalBuilder().setCustomId(`question_add_modal_${categoryId}`).setTitle("❓ Dodaj pytanie");
     const question = new TextInputBuilder().setCustomId("question_text").setLabel("Treść pytania").setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000);
+
+    modal.addComponents(new ActionRowBuilder().addComponents(question));
+    return modal;
+}
+
+function editQuestionModal(categoryId, index, currentText) {
+    const modal = new ModalBuilder().setCustomId(`question_edit_modal_${categoryId}_${index}`).setTitle("✏️ Edytuj pytanie");
+    const question = new TextInputBuilder().setCustomId("question_text").setLabel("Nowa treść pytania").setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000).setValue(currentText);
 
     modal.addComponents(new ActionRowBuilder().addComponents(question));
     return modal;
@@ -829,13 +849,23 @@ client.on("interactionCreate", async interaction => {
             else if (interaction.customId === "admin_questions") {
                 if (!isAdmin(interaction.member)) return;
                 const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId("q_add").setLabel("➕ Dodaj pytanie").setStyle(ButtonStyle.Success)
+                    new ButtonBuilder().setCustomId("q_add").setLabel("➕ Dodaj pytanie").setStyle(ButtonStyle.Success),
+                    new ButtonBuilder().setCustomId("q_edit").setLabel("✏️ Edytuj pytanie").setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId("q_del").setLabel("🗑️ Usuń pytanie").setStyle(ButtonStyle.Danger)
                 );
-                await interaction.reply({ content: "❓ Zarządzanie pytaniami:", components: [row], ephemeral: true });
+                await interaction.reply({ content: "❓ Zarządzanie pytaniami w formularzu ticketów:", components: [row], ephemeral: true });
             }
             else if (interaction.customId === "q_add") {
                 if (!isAdmin(interaction.member)) return;
-                await interaction.reply({ content: "Wybierz kategorię, do której dodasz pytanie:", components: [questionCategoryMenu()], ephemeral: true });
+                await interaction.reply({ content: "Wybierz kategorię, do której chcesz **dodać** pytanie:", components: [questionCategoryMenu("add")], ephemeral: true });
+            }
+            else if (interaction.customId === "q_edit") {
+                if (!isAdmin(interaction.member)) return;
+                await interaction.reply({ content: "Wybierz kategorię, z której chcesz **edytować** pytanie:", components: [questionCategoryMenu("edit")], ephemeral: true });
+            }
+            else if (interaction.customId === "q_del") {
+                if (!isAdmin(interaction.member)) return;
+                await interaction.reply({ content: "Wybierz kategorię, z której chcesz **usunąć** pytanie:", components: [questionCategoryMenu("del")], ephemeral: true });
             }
             else if (interaction.customId === "admin_roles") {
                 if (!isAdmin(interaction.member)) return;
@@ -939,9 +969,46 @@ client.on("interactionCreate", async interaction => {
                 saveConfig();
                 await interaction.update({ content: "🗑️ Pomyślnie usunięto wybraną kategorię!", components: [] });
             }
-            else if (interaction.customId === "admin_question_category") {
+            // Wybór kategorii do dodania pytania
+            else if (interaction.customId === "q_cat_select_add") {
                 const catId = interaction.values[0];
                 await interaction.showModal(addQuestionModal(catId));
+            }
+            // Wybór kategorii do edycji pytania -> pokazuje listę pytań
+            else if (interaction.customId === "q_cat_select_edit") {
+                const category = getCategory(interaction.values[0]);
+                if (!category || category.questions.length === 0) {
+                    return await interaction.update({ content: "❌ Ta kategoria nie ma żadnych pytań do edycji.", components: [] });
+                }
+                await interaction.update({ content: `Wybierz pytanie z kategorii **${category.name}** do edycji:`, components: [questionSelectMenu(category, "edit")] });
+            }
+            // Wybór kategorii do usunięcia pytania -> pokazuje listę pytań
+            else if (interaction.customId === "q_cat_select_del") {
+                const category = getCategory(interaction.values[0]);
+                if (!category || category.questions.length === 0) {
+                    return await interaction.update({ content: "❌ Ta kategoria nie ma żadnych pytań do usunięcia.", components: [] });
+                }
+                await interaction.update({ content: `Wybierz pytanie z kategorii **${category.name}** do usunięcia:`, components: [questionSelectMenu(category, "del")] });
+            }
+            // Wybór konkretnego pytania do edycji
+            else if (interaction.customId.startsWith("q_select_edit_")) {
+                const catId = interaction.customId.replace("q_select_edit_", "");
+                const qIndex = parseInt(interaction.values[0]);
+                const category = getCategory(catId);
+                if (category && category.questions[qIndex] !== undefined) {
+                    await interaction.showModal(editQuestionModal(catId, qIndex, category.questions[qIndex]));
+                }
+            }
+            // Wybór konkretnego pytania do usunięcia
+            else if (interaction.customId.startsWith("q_select_del_")) {
+                const catId = interaction.customId.replace("q_select_del_", "");
+                const qIndex = parseInt(interaction.values[0]);
+                const category = getCategory(catId);
+                if (category) {
+                    const removed = category.questions.splice(qIndex, 1);
+                    saveConfig();
+                    await interaction.update({ content: `🗑️ Pomyślnie usunięto pytanie: *"${removed}"*`, components: [] });
+                }
             }
         }
 
@@ -991,6 +1058,17 @@ client.on("interactionCreate", async interaction => {
                     category.questions.push(interaction.fields.getTextInputValue("question_text"));
                     saveConfig();
                     await interaction.reply({ content: "✅ Dodano pytanie do wybranej kategorii!", ephemeral: true });
+                }
+            }
+            else if (interaction.customId.startsWith("question_edit_modal_")) {
+                const parts = interaction.customId.replace("question_edit_modal_", "").split("_");
+                const catId = parts[0];
+                const qIndex = parseInt(parts[1]);
+                const category = getCategory(catId);
+                if (category && category.questions[qIndex] !== undefined) {
+                    category.questions[qIndex] = interaction.fields.getTextInputValue("question_text");
+                    saveConfig();
+                    await interaction.reply({ content: "✅ Pomyślnie zaktualizowano treść pytania!", ephemeral: true });
                 }
             }
             else if (interaction.customId.startsWith("ticket_questions_modal_")) {
