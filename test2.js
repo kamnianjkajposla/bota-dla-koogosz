@@ -11,6 +11,7 @@ const {
     StringSelectMenuBuilder,
     StringSelectMenuOptionBuilder,
     ChannelSelectMenuBuilder,
+    RoleSelectMenuBuilder,
     ModalBuilder,
     TextInputBuilder,
     TextInputStyle,
@@ -22,16 +23,26 @@ const path = require("path");
 const http = require("http");
 
 // ==========================================================
-// USTAWIENIA I ZMIENNE ŚRODOWISKOWE
+// USTAWIENIA I BEZPIECZNE ŚCIEŻKI
 // ==========================================================
 
 const TOKEN = process.env.DISCORD_TOKEN;
-const DATA_DIR = process.env.DATA_DIR ;
-const CONFIG_FILE = path.join(DATA_DIR, "ticket-config.json");
+let DATA_DIR = process.env.DATA_DIR && typeof process.env.DATA_DIR === 'string' ? process.env.DATA_DIR : __dirname;
+
+try {
+    if (fs.existsSync(DATA_DIR) && !fs.lstatSync(DATA_DIR).isDirectory()) {
+        console.warn(`⚠️ Ścieżka ${DATA_DIR} jest plikiem, a nie katalogiem! Przełączam na katalog bieżący.`);
+        DATA_DIR = __dirname;
+    }
+} catch (e) {
+    DATA_DIR = __dirname;
+}
 
 if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
 }
+
+const CONFIG_FILE = path.join(DATA_DIR, "ticket-config.json");
 
 // ==========================================================
 // SERWER HTTP (DLA HOSTINGU / RENDER / COLIFY)
@@ -156,6 +167,9 @@ const defaultConfig = {
     ]
 };
 
+// Śledzenie przejętych ticketów w pamięci bota (channelId -> userId)
+const claimedTickets = new Map();
+
 // ==========================================================
 // ŁADOWANIE KONFIGURACJI
 // ==========================================================
@@ -231,6 +245,12 @@ function makeId() {
 function isAdmin(member) {
     if (!member) return false;
     return member.permissions?.has(PermissionsBitField.Flags.Administrator);
+}
+
+function isSupportOrAdmin(member) {
+    if (!member) return false;
+    if (isAdmin(member)) return true;
+    return member.roles.cache.some(role => config.supportRoleIds.includes(role.id));
 }
 
 function getCategory(categoryId) {
@@ -732,6 +752,13 @@ client.on("guildMemberAdd", async member => {
     }
 });
 
+// Czyszczenie mapy przejęć po usunięciu kanału
+client.on("channelDelete", channel => {
+    if (claimedTickets.has(channel.id)) {
+        claimedTickets.delete(channel.id);
+    }
+});
+
 // ==========================================================
 // OBSŁUGA INTERAKCJI
 // ==========================================================
@@ -869,7 +896,20 @@ client.on("interactionCreate", async interaction => {
             }
             else if (interaction.customId === "admin_roles") {
                 if (!isAdmin(interaction.member)) return;
-                await interaction.reply({ content: `Role obsługi ID: ${config.supportRoleIds.map(id => `<@&${id}>`).join(", ") || "Brak"}`, ephemeral: true });
+
+                const roleSelect = new RoleSelectMenuBuilder()
+                    .setCustomId("support_role_select")
+                    .setPlaceholder("👥 Wybierz rolę do dodania/usunięcia z obsługi");
+
+                const row = new ActionRowBuilder().addComponents(roleSelect);
+
+                const currentRolesList = config.supportRoleIds.map(id => `<@&${id}>`).join(", ") || "Brak";
+
+                await interaction.reply({
+                    content: `👥 **Aktualne role obsługi ticketów:** ${currentRolesList}\n\nWybierz rolę poniżej, aby ją dodać lub usunąć:`,
+                    components: [row],
+                    ephemeral: true
+                });
             }
             else if (interaction.customId === "admin_ticket_category") {
                 if (!isAdmin(interaction.member)) return;
@@ -908,12 +948,38 @@ client.on("interactionCreate", async interaction => {
                 await interaction.message.delete().catch(() => {});
             }
             else if (interaction.customId === "ticket_claim") {
-                if (!interaction.member.roles.cache.some(r => config.supportRoleIds.includes(r.id)) && !isAdmin(interaction.member)) {
-                    return await interaction.reply({ content: "❌ Nie masz uprawnień do przejęcia ticketu.", ephemeral: true });
+                if (!isSupportOrAdmin(interaction.member)) {
+                    return await interaction.reply({ content: "❌ Nie masz uprawnień do przejęcia tego ticketu.", ephemeral: true });
                 }
-                await interaction.reply({ content: `🙋 Ticket został przejęty przez ${interaction.user}` });
+
+                // SPRAWDZENIE CZY TICKET JEST JUŻ PRZEJĘTY
+                if (claimedTickets.has(interaction.channel.id)) {
+                    const claimedUserId = claimedTickets.get(interaction.channel.id);
+                    return await interaction.reply({
+                        content: `⚠️ Ten ticket został już przejęty przez <@${claimedUserId}>!`,
+                        ephemeral: true
+                    });
+                }
+
+                // ZAPISANIE PRZEJĘCIA TICKETU
+                claimedTickets.set(interaction.channel.id, interaction.user.id);
+
+                // ELEGANCKI, CIEMNY EMBED PO PRZYJĘCIU TICKETU (CZARNY PASEK BOCZNY 0x2F3136)
+                const claimEmbed = new EmbedBuilder()
+                    .setTitle("👔 Zgłoszenie Przyjęte")
+                    .setDescription(`Twój ticket został oficjalnie przyjęty do obsługi przez ${interaction.user}.\nOd tej pory ta osoba zajmuje się Twoim zgłoszeniem. Prosimy o cierpliwość!`)
+                    .setColor(0x2F3136)
+                    .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
+                    .setFooter({ text: `Obsługa zgłoszenia: ${interaction.user.tag}`, iconURL: interaction.user.displayAvatarURL() })
+                    .setTimestamp();
+
+                await interaction.reply({ embeds: [claimEmbed] });
             }
             else if (interaction.customId === "ticket_close") {
+                if (!isSupportOrAdmin(interaction.member)) {
+                    return await interaction.reply({ content: "❌ Tylko administracja lub członkowie obsługi mogą zamknąć ten ticket.", ephemeral: true });
+                }
+
                 await interaction.reply({ content: "🔒 Zamykanie ticketu i generowanie transkrypcji..." });
                 const attachment = await createTranscript(interaction.channel, interaction.user);
 
@@ -928,12 +994,28 @@ client.on("interactionCreate", async interaction => {
                 }
 
                 setTimeout(async () => {
+                    claimedTickets.delete(interaction.channel.id);
                     await interaction.channel.delete().catch(() => {});
                 }, 4000);
             }
         }
 
         // --- SELECT MENU ---
+        else if (interaction.isRoleSelectMenu()) {
+            if (interaction.customId === "support_role_select") {
+                const selectedRoleId = interaction.values[0];
+
+                if (config.supportRoleIds.includes(selectedRoleId)) {
+                    config.supportRoleIds = config.supportRoleIds.filter(id => id !== selectedRoleId);
+                    saveConfig();
+                    await interaction.update({ content: `🗑️ Usunięto rolę <@&${selectedRoleId}> z ról obsługi ticketów.`, components: [] });
+                } else {
+                    config.supportRoleIds.push(selectedRoleId);
+                    saveConfig();
+                    await interaction.update({ content: `✅ Dodano rolę <@&${selectedRoleId}> do ról obsługi ticketów.`, components: [] });
+                }
+            }
+        }
         else if (interaction.isChannelSelectMenu()) {
             if (interaction.customId === "transcript_channel_select") {
                 const selectedChannelId = interaction.values[0];
@@ -969,12 +1051,10 @@ client.on("interactionCreate", async interaction => {
                 saveConfig();
                 await interaction.update({ content: "🗑️ Pomyślnie usunięto wybraną kategorię!", components: [] });
             }
-            // Wybór kategorii do dodania pytania
             else if (interaction.customId === "q_cat_select_add") {
                 const catId = interaction.values[0];
                 await interaction.showModal(addQuestionModal(catId));
             }
-            // Wybór kategorii do edycji pytania -> pokazuje listę pytań
             else if (interaction.customId === "q_cat_select_edit") {
                 const category = getCategory(interaction.values[0]);
                 if (!category || category.questions.length === 0) {
@@ -982,7 +1062,6 @@ client.on("interactionCreate", async interaction => {
                 }
                 await interaction.update({ content: `Wybierz pytanie z kategorii **${category.name}** do edycji:`, components: [questionSelectMenu(category, "edit")] });
             }
-            // Wybór kategorii do usunięcia pytania -> pokazuje listę pytań
             else if (interaction.customId === "q_cat_select_del") {
                 const category = getCategory(interaction.values[0]);
                 if (!category || category.questions.length === 0) {
@@ -990,7 +1069,6 @@ client.on("interactionCreate", async interaction => {
                 }
                 await interaction.update({ content: `Wybierz pytanie z kategorii **${category.name}** do usunięcia:`, components: [questionSelectMenu(category, "del")] });
             }
-            // Wybór konkretnego pytania do edycji
             else if (interaction.customId.startsWith("q_select_edit_")) {
                 const catId = interaction.customId.replace("q_select_edit_", "");
                 const qIndex = parseInt(interaction.values[0]);
@@ -999,7 +1077,6 @@ client.on("interactionCreate", async interaction => {
                     await interaction.showModal(editQuestionModal(catId, qIndex, category.questions[qIndex]));
                 }
             }
-            // Wybór konkretnego pytania do usunięcia
             else if (interaction.customId.startsWith("q_select_del_")) {
                 const catId = interaction.customId.replace("q_select_del_", "");
                 const qIndex = parseInt(interaction.values[0]);
